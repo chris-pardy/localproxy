@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,9 +19,14 @@ const (
 
 func runInstall() {
 	if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "install requires root. Run: sudo localproxy install")
+		fmt.Fprintln(os.Stderr, "install requires root. Run: sudo localproxy install -roots ~/Code")
 		os.Exit(1)
 	}
+
+	// Parse install-specific flags
+	installFlags := flag.NewFlagSet("install", flag.ExitOnError)
+	rootsFlag := installFlags.String("roots", "", "comma-separated root directories to scan (e.g. ~/Code,~/Projects)")
+	installFlags.Parse(os.Args[2:])
 
 	// Find our own binary
 	self, err := os.Executable()
@@ -30,11 +36,23 @@ func runInstall() {
 	}
 	self, _ = filepath.EvalSymlinks(self)
 
-	// Detect roots from SUDO_USER's home
-	roots := "/Users"
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		roots = fmt.Sprintf("/Users/%s/Code", sudoUser)
+	// Resolve roots: flag > existing plist > SUDO_USER default
+	roots := *rootsFlag
+	if roots == "" {
+		roots = readExistingRoots()
 	}
+	if roots == "" {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			roots = fmt.Sprintf("/Users/%s/Code", sudoUser)
+		}
+	}
+	if roots == "" {
+		fmt.Fprintln(os.Stderr, "cannot detect root directories. Use: sudo localproxy install -roots ~/Code")
+		os.Exit(1)
+	}
+
+	// Expand ~ in each root path
+	roots = expandRoots(roots)
 
 	// Check if already installed
 	updating := false
@@ -134,6 +152,53 @@ func generatePlist(roots string) string {
 		"{{LOG}}", logPath,
 	)
 	return r.Replace(tmpl)
+}
+
+// readExistingRoots extracts the -roots value from an existing plist so
+// that reinstalls/updates preserve the user's configuration.
+func readExistingRoots() string {
+	data, err := os.ReadFile(plistPath)
+	if err != nil {
+		return ""
+	}
+	// Find the -roots argument in the plist XML
+	content := string(data)
+	marker := "<string>-roots</string>"
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := content[idx+len(marker):]
+	// Next <string>...</string> is the value
+	start := strings.Index(rest, "<string>")
+	end := strings.Index(rest, "</string>")
+	if start < 0 || end < 0 || end <= start+8 {
+		return ""
+	}
+	return rest[start+8 : end]
+}
+
+// expandRoots expands ~ to the invoking user's home directory in each root path.
+func expandRoots(roots string) string {
+	home := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		home = "/Users/" + sudoUser
+	} else if h, err := os.UserHomeDir(); err == nil {
+		home = h
+	}
+	if home == "" {
+		return roots
+	}
+
+	var expanded []string
+	for _, r := range strings.Split(roots, ",") {
+		r = strings.TrimSpace(r)
+		if strings.HasPrefix(r, "~/") {
+			r = home + r[1:]
+		}
+		expanded = append(expanded, r)
+	}
+	return strings.Join(expanded, ",")
 }
 
 func copyFile(src, dst string) error {

@@ -33,8 +33,16 @@ When multiple ports are found for a project, localproxy probes with HTTP OPTIONS
 
 ```bash
 go build -o localproxy .
-sudo ./localproxy install
+sudo ./localproxy install -roots ~/Code
 ```
+
+Specify the directories where your projects live with `-roots` (comma-separated):
+
+```bash
+sudo ./localproxy install -roots ~/Code,~/Projects,~/Work
+```
+
+The `-roots` setting is preserved across reinstalls/updates — you only need to specify it once. Subsequent `sudo ./localproxy install` will remember your previous roots.
 
 This installs a LaunchDaemon that starts on boot. Visit http://localhost for the dashboard.
 
