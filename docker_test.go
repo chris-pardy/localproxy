@@ -92,15 +92,18 @@ func TestResolveNamesCompose(t *testing.T) {
 	labels := d.parseLabels(c.Labels)
 	names := d.resolveNames(c, labels)
 
-	// Single port compose: should get both bare and qualified name
-	if len(names) != 2 {
-		t.Fatalf("expected 2 names, got %d: %+v", len(names), names)
+	// Single port compose: should get bare name, service-qualified, and port-qualified
+	if len(names) != 3 {
+		t.Fatalf("expected 3 names, got %d: %+v", len(names), names)
 	}
 	if names[0].name != "myapp" || names[0].port != 3000 {
 		t.Errorf("expected myapp:3000, got %s:%d", names[0].name, names[0].port)
 	}
 	if names[1].name != "myapp-web" || names[1].port != 3000 {
 		t.Errorf("expected myapp-web:3000, got %s:%d", names[1].name, names[1].port)
+	}
+	if names[2].name != "myapp-3000" || names[2].port != 3000 || names[2].project != "myapp" {
+		t.Errorf("expected myapp-3000:3000 (project=myapp), got %s:%d (project=%s)", names[2].name, names[2].port, names[2].project)
 	}
 }
 
@@ -118,10 +121,14 @@ func TestResolveNamesStandalone(t *testing.T) {
 	labels := d.parseLabels(c.Labels)
 	names := d.resolveNames(c, labels)
 
-	if len(names) != 1 {
-		t.Fatalf("expected 1 name, got %d", len(names))
+	// Standalone: bare name + port-qualified
+	if len(names) != 2 {
+		t.Fatalf("expected 2 names, got %d: %+v", len(names), names)
 	}
 	if names[0].name != "my-redis" || names[0].port != 6379 {
 		t.Errorf("expected my-redis:6379, got %s:%d", names[0].name, names[0].port)
+	}
+	if names[1].name != "my-redis-6379" || names[1].port != 6379 || names[1].project != "my-redis" {
+		t.Errorf("expected my-redis-6379:6379 (project=my-redis), got %s:%d (project=%s)", names[1].name, names[1].port, names[1].project)
 	}
 }

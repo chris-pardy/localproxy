@@ -184,6 +184,59 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestPortQualifiedName(t *testing.T) {
+	tests := []struct {
+		name string
+		port int
+		want string
+	}{
+		{"app", 3000, "app-3000"},
+		{"web.pkg.app", 3001, "web-3001.pkg.app"},
+		{"service.app", 8080, "service-8080.app"},
+	}
+	for _, tt := range tests {
+		got := PortQualifiedName(tt.name, tt.port)
+		if got != tt.want {
+			t.Errorf("PortQualifiedName(%q, %d) = %q, want %q", tt.name, tt.port, got, tt.want)
+		}
+	}
+}
+
+func TestAllGrouped(t *testing.T) {
+	r := NewRegistry()
+	r.Register("app", 3000, SourceScanner, 100, "/code/app")
+	r.RegisterFull(Registration{Name: "app-3000", Port: 3000, Source: SourceScanner, Dir: "/code/app", Project: "app"})
+	r.RegisterFull(Registration{Name: "app-3001", Port: 3001, Source: SourceScanner, Dir: "/code/app", Project: "app"})
+	r.RegisterFull(Registration{Name: "api.app", Port: 3001, Source: SourceDotfile, Dir: "/code/app", Project: "app"})
+	r.Register("other", 4000, SourceScanner, 200, "/code/other")
+
+	groups := r.AllGrouped()
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(groups))
+	}
+
+	byProject := make(map[string]ProjectGroup)
+	for _, g := range groups {
+		byProject[g.Default.ProjectName()] = g
+	}
+
+	appGroup := byProject["app"]
+	if appGroup.Default.Name != "app" || appGroup.Default.Port != 3000 {
+		t.Errorf("expected app default app:3000, got %s:%d", appGroup.Default.Name, appGroup.Default.Port)
+	}
+	if len(appGroup.Variants) != 3 {
+		t.Errorf("expected 3 variants for app, got %d", len(appGroup.Variants))
+	}
+
+	otherGroup := byProject["other"]
+	if otherGroup.Default.Name != "other" || otherGroup.Default.Port != 4000 {
+		t.Errorf("expected other default other:4000, got %s:%d", otherGroup.Default.Name, otherGroup.Default.Port)
+	}
+	if len(otherGroup.Variants) != 0 {
+		t.Errorf("expected 0 variants for other, got %d", len(otherGroup.Variants))
+	}
+}
+
 func TestSourceString(t *testing.T) {
 	tests := []struct {
 		s    Source

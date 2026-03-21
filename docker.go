@@ -92,7 +92,17 @@ func (d *DockerScanner) scan(ctx context.Context) {
 		names := d.resolveNames(c, labels)
 
 		for _, nm := range names {
-			d.registry.Register(nm.name, nm.port, SourceDocker, 0, nm.dir)
+			if nm.project != "" {
+				d.registry.RegisterFull(Registration{
+					Name:    nm.name,
+					Port:    nm.port,
+					Source:  SourceDocker,
+					Dir:     nm.dir,
+					Project: nm.project,
+				})
+			} else {
+				d.registry.Register(nm.name, nm.port, SourceDocker, 0, nm.dir)
+			}
 		}
 	}
 
@@ -100,9 +110,10 @@ func (d *DockerScanner) scan(ctx context.Context) {
 }
 
 type namedPort struct {
-	name string
-	port int
-	dir  string
+	name    string
+	port    int
+	dir     string
+	project string // base project name for grouping (empty = same as name)
 }
 
 func (d *DockerScanner) resolveNames(c dockerContainer, labels map[string]string) []namedPort {
@@ -123,22 +134,45 @@ func (d *DockerScanner) resolveNames(c dockerContainer, labels map[string]string
 				projectName = dl.Name
 			}
 
-			if service != "" && len(ports) > 0 {
-				// Multi-service: qualify each with service name
-				// If there's only one port, also register the bare project name
-				var result []namedPort
+			var result []namedPort
+
+			if service != "" {
+				// Multi-service: qualify with service name, pick first port as bare name
 				if len(ports) == 1 {
-					result = append(result, namedPort{projectName, ports[0], projectDir})
+					result = append(result, namedPort{name: projectName, port: ports[0], dir: projectDir})
 				}
 				for _, p := range ports {
 					qualifiedName := projectName + "-" + service
-					result = append(result, namedPort{qualifiedName, p, projectDir})
+					result = append(result, namedPort{name: qualifiedName, port: p, dir: projectDir})
 				}
-				return result
+			} else if len(ports) > 0 {
+				// Single service: register best port as bare name
+				result = append(result, namedPort{name: projectName, port: ports[0], dir: projectDir})
 			}
-			if len(ports) > 0 {
-				return []namedPort{{projectName, ports[0], projectDir}}
+
+			// Register port-qualified names for all ports
+			for _, p := range ports {
+				result = append(result, namedPort{
+					name:    PortQualifiedName(projectName, p),
+					port:    p,
+					dir:     projectDir,
+					project: projectName,
+				})
 			}
+
+			// Register dotfile [ports] named subdomains
+			if dl, err := ParseDotLocalhost(filepath.Join(projectDir, ".localhost")); err == nil {
+				for _, pm := range dl.Ports {
+					result = append(result, namedPort{
+						name:    pm.Subdomain + "." + projectName,
+						port:    pm.Port,
+						dir:     projectDir,
+						project: projectName,
+					})
+				}
+			}
+
+			return result
 		}
 	}
 
@@ -150,7 +184,16 @@ func (d *DockerScanner) resolveNames(c dockerContainer, labels map[string]string
 	name = strings.ToLower(name)
 
 	if len(ports) > 0 {
-		return []namedPort{{name, ports[0], ""}}
+		var result []namedPort
+		result = append(result, namedPort{name: name, port: ports[0]})
+		for _, p := range ports {
+			result = append(result, namedPort{
+				name:    PortQualifiedName(name, p),
+				port:    p,
+				project: name,
+			})
+		}
+		return result
 	}
 	return nil
 }
