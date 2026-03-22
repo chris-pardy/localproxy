@@ -13,11 +13,12 @@ import (
 )
 
 type DockerScanner struct {
-	registry *Registry
-	rootDirs []string
-	interval time.Duration
-	logger   *slog.Logger
-	warned   bool
+	registry  *Registry
+	rootDirs  []string
+	interval  time.Duration
+	logger    *slog.Logger
+	warned    bool
+	dockerBin string
 }
 
 func NewDockerScanner(registry *Registry, rootDirs []string, interval time.Duration, logger *slog.Logger) *DockerScanner {
@@ -29,12 +30,33 @@ func NewDockerScanner(registry *Registry, rootDirs []string, interval time.Durat
 	}
 }
 
+// findDocker returns the path to the docker binary.
+// exec.LookPath only searches PATH, which is minimal under LaunchDaemons,
+// so we also check common install locations.
+func findDocker() string {
+	if p, err := exec.LookPath("docker"); err == nil {
+		return p
+	}
+	for _, p := range []string{
+		"/opt/homebrew/bin/docker",
+		"/usr/local/bin/docker",
+		"/Applications/Docker.app/Contents/Resources/bin/docker",
+	} {
+		if _, err := exec.LookPath(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 func (d *DockerScanner) Run(ctx context.Context) {
 	// Check if docker is available
-	if _, err := exec.LookPath("docker"); err != nil {
+	dockerBin := findDocker()
+	if dockerBin == "" {
 		d.logger.Info("docker not found, docker scanner disabled")
 		return
 	}
+	d.dockerBin = dockerBin
 
 	d.logger.Info("docker scanner started", "interval", d.interval)
 	ticker := time.NewTicker(d.interval)
@@ -64,7 +86,7 @@ var portPattern = regexp.MustCompile(`(?:\d+\.\d+\.\d+\.\d+|::):(\d+)->(\d+)/\w+
 func (d *DockerScanner) scan(ctx context.Context) {
 	cycleStart := time.Now()
 
-	out, err := exec.CommandContext(ctx, "docker", "ps", "--format", "{{json .}}").Output()
+	out, err := exec.CommandContext(ctx, d.dockerBin, "ps", "--format", "{{json .}}").Output()
 	if err != nil {
 		if !d.warned {
 			d.logger.Warn("docker ps failed, is Docker running?", "err", err)
