@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"time"
 )
 
 func (p *ProxyHandler) serveDashboard(w http.ResponseWriter, r *http.Request) {
@@ -26,9 +25,6 @@ th { text-align: left; padding: 10px 16px; background: #f5f5f5; font-weight: 600
 td { padding: 10px 16px; border-top: 1px solid #eee; }
 a { color: #0066cc; text-decoration: none; }
 a:hover { text-decoration: underline; }
-.status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
-.status.up { background: #22c55e; }
-.status.down { background: #ef4444; }
 .source { font-size: 0.8rem; color: #888; background: #f0f0f0; padding: 2px 8px; border-radius: 4px; }
 .empty { text-align: center; padding: 40px; color: #999; }
 code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
@@ -45,23 +41,18 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.8
 		fmt.Fprint(w, `<table><tr><td class="empty">No projects registered. Start a dev server or use <code>localproxy register</code>.</td></tr></table>`)
 	} else {
 		fmt.Fprint(w, `<table>
-<tr><th></th><th>Project</th><th>Port</th><th>Source</th><th>Directory</th></tr>`)
+<tr><th>Project</th><th>Port</th><th>Source</th><th>Directory</th></tr>`)
 		for _, reg := range all {
-			status := "down"
-			if isHTTPAlive(reg.Port) {
-				status = "up"
-			}
 			dir := reg.Dir
 			if dir == "" {
 				dir = "-"
 			}
 			fmt.Fprintf(w, `<tr>
-<td><span class="status %s"></span></td>
 <td><a href="http://%s.localhost">%s</a></td>
 <td>%d</td>
 <td><span class="source">%s</span></td>
 <td>%s</td>
-</tr>`, status, reg.Name, reg.Name, reg.Port, reg.Source, dir)
+</tr>`, reg.Name, reg.Name, reg.Port, reg.Source, dir)
 		}
 		fmt.Fprint(w, `</table>`)
 	}
@@ -79,22 +70,3 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.8
 </body></html>`)
 }
 
-var probeClient = &http.Client{
-	Timeout: 200 * time.Millisecond,
-	CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
-}
-
-func isHTTPAlive(port int) bool {
-	req, err := http.NewRequest("OPTIONS", fmt.Sprintf("http://localhost:%d/", port), nil)
-	if err != nil {
-		return false
-	}
-	resp, err := probeClient.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return true // any HTTP status code means a real server is there
-}

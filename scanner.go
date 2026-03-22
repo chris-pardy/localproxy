@@ -46,7 +46,7 @@ func (s *Scanner) scan(ctx context.Context) {
 	cycleStart := time.Now()
 
 	// Step 1: Get listening ports
-	listeners, err := s.getListeners(ctx)
+	listeners, cmds, err := s.getListeners(ctx)
 	if err != nil {
 		s.logger.Error("lsof failed", "err", err)
 		return
@@ -67,7 +67,7 @@ func (s *Scanner) scan(ctx context.Context) {
 	// Step 3: Group all ports by project name
 	type projectInfo struct {
 		dir   string
-		ports []int
+		ports []portEntry
 		pid   int
 	}
 	projects := make(map[string]*projectInfo)
@@ -89,12 +89,15 @@ func (s *Scanner) scan(ctx context.Context) {
 			projectName = dl.Name
 		}
 
+		cmd := cmds[pid]
 		p, ok := projects[projectName]
 		if !ok {
 			p = &projectInfo{dir: projectDir, pid: pid}
 			projects[projectName] = p
 		}
-		p.ports = append(p.ports, ports...)
+		for _, port := range ports {
+			p.ports = append(p.ports, portEntry{port: port, cmd: cmd})
+		}
 	}
 
 	// Step 4: Pick best port per project and register
@@ -111,6 +114,15 @@ func (s *Scanner) scan(ctx context.Context) {
 
 // listener info: pid → list of ports
 type listenerMap map[int][]int
+
+// commandMap: pid → command name
+type commandMap map[int]string
+
+// portEntry pairs a port number with the command that owns it.
+type portEntry struct {
+	port int
+	cmd  string
+}
 
 var excludedCommands = map[string]bool{
 	// System services
@@ -148,23 +160,25 @@ var excludedCommands = map[string]bool{
 }
 
 // getListeners parses lsof output to find listening TCP ports.
-func (s *Scanner) getListeners(ctx context.Context) (listenerMap, error) {
+func (s *Scanner) getListeners(ctx context.Context) (listenerMap, commandMap, error) {
 	out, err := exec.CommandContext(ctx, "lsof", "-i", "-P", "-n", "-sTCP:LISTEN", "-F", "pcn").Output()
 	if err != nil {
 		// lsof returns exit code 1 when no results found
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
-	return parseLsofListeners(string(out)), nil
+	listeners, cmds := parseLsofListeners(string(out))
+	return listeners, cmds, nil
 }
 
 // parseLsofListeners parses the -F pcn output format.
 // Lines: p<pid>, c<command>, n<address>
-func parseLsofListeners(output string) listenerMap {
+func parseLsofListeners(output string) (listenerMap, commandMap) {
 	result := make(listenerMap)
+	cmds := make(commandMap)
 	var currentPID int
 	var currentCmd string
 
@@ -188,11 +202,12 @@ func parseLsofListeners(output string) listenerMap {
 			port := parsePort(addr)
 			if port > 0 && port < 65536 {
 				result[currentPID] = appendUnique(result[currentPID], port)
+				cmds[currentPID] = currentCmd
 			}
 		}
 	}
 
-	return result
+	return result, cmds
 }
 
 // parsePort extracts port from addresses like "*:3000", "127.0.0.1:3000", "[::1]:3000"
@@ -288,9 +303,33 @@ func (s *Scanner) matchProject(cwd string) (name string, dir string) {
 	return "", ""
 }
 
+// webServerCommands are process names that indicate an HTTP/web server.
+// Ports owned by these processes are preferred over others.
+var webServerCommands = map[string]bool{
+	"node":       true,
+	"deno":       true,
+	"bun":        true,
+	"python":     true,
+	"python3":    true,
+	"ruby":       true,
+	"php":        true,
+	"go":         true,
+	"java":       true,
+	"beam.smp":   true, // Erlang/Elixir
+	"dotnet":     true,
+	"next-serve": true,
+	"vite":       true,
+	"nginx":      true,
+	"caddy":      true,
+	"uvicorn":    true,
+	"gunicorn":   true,
+	"puma":       true,
+}
+
 // pickPort selects the best port for a project.
-// Priority: dotfile > HTTP-responsive port > lowest non-system port.
-func (s *Scanner) pickPort(projectDir string, ports []int) int {
+// Priority: dotfile > web-server process port > lowest non-system port.
+// No connections are attempted; selection is based on process name heuristics.
+func (s *Scanner) pickPort(projectDir string, ports []portEntry) int {
 	dl, err := ParseDotLocalhost(filepath.Join(projectDir, ".localhost"))
 	if err == nil && dl.Port > 0 {
 		return dl.Port
@@ -298,41 +337,40 @@ func (s *Scanner) pickPort(projectDir string, ports []int) int {
 
 	// Deduplicate
 	seen := make(map[int]bool)
-	var unique []int
+	var unique []portEntry
 	for _, p := range ports {
-		if !seen[p] {
-			seen[p] = true
+		if !seen[p.port] {
+			seen[p.port] = true
 			unique = append(unique, p)
 		}
 	}
 
-	// If only one candidate, skip probing
 	if len(unique) == 1 {
-		return unique[0]
+		return unique[0].port
 	}
 
-	// Probe candidates with HTTP OPTIONS, prefer responders
-	var httpPorts []int
+	// Prefer ports owned by known web server processes
+	var webPorts []portEntry
 	for _, p := range unique {
-		if isHTTPAlive(p) {
-			httpPorts = append(httpPorts, p)
+		if webServerCommands[p.cmd] {
+			webPorts = append(webPorts, p)
 		}
 	}
 
 	pick := unique
-	if len(httpPorts) > 0 {
-		pick = httpPorts
+	if len(webPorts) > 0 {
+		pick = webPorts
 	}
 
 	// Pick lowest non-system port from the candidates
 	best := 0
 	for _, p := range pick {
-		if p >= 1024 && (best == 0 || p < best) {
-			best = p
+		if p.port >= 1024 && (best == 0 || p.port < best) {
+			best = p.port
 		}
 	}
 	if best == 0 && len(pick) > 0 {
-		best = pick[0]
+		best = pick[0].port
 	}
 	return best
 }

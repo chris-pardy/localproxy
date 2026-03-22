@@ -1,8 +1,6 @@
 package main
 
 import (
-	"net"
-	"net/http"
 	"testing"
 )
 
@@ -19,10 +17,18 @@ cmDNSResponder
 n*:5353
 `
 
-	result := parseLsofListeners(output)
+	result, cmds := parseLsofListeners(output)
 
 	if len(result) != 2 {
 		t.Fatalf("expected 2 PIDs, got %d", len(result))
+	}
+
+	// Check command names
+	if cmds[1234] != "node" {
+		t.Fatalf("expected command 'node' for PID 1234, got %q", cmds[1234])
+	}
+	if cmds[5678] != "vite" {
+		t.Fatalf("expected command 'vite' for PID 5678, got %q", cmds[5678])
 	}
 
 	// PID 1234 should have ports 3000, 3001
@@ -51,7 +57,7 @@ func TestParseLsofListenersIPv6(t *testing.T) {
 cnode
 n[::1]:8080
 `
-	result := parseLsofListeners(output)
+	result, _ := parseLsofListeners(output)
 	ports := result[100]
 	if len(ports) != 1 || ports[0] != 8080 {
 		t.Fatalf("expected [8080], got %v", ports)
@@ -59,7 +65,7 @@ n[::1]:8080
 }
 
 func TestParseLsofListenersEmpty(t *testing.T) {
-	result := parseLsofListeners("")
+	result, _ := parseLsofListeners("")
 	if len(result) != 0 {
 		t.Fatalf("expected empty map, got %v", result)
 	}
@@ -135,40 +141,49 @@ func TestMatchProject(t *testing.T) {
 func TestPickPort(t *testing.T) {
 	s := &Scanner{}
 
-	// Single port: skip probing, return it directly
-	port := s.pickPort("/nonexistent", []int{3000})
+	// Single port: return it directly
+	port := s.pickPort("/nonexistent", []portEntry{{port: 3000, cmd: "node"}})
 	if port != 3000 {
 		t.Fatalf("expected 3000, got %d", port)
 	}
 
-	// Multiple ports, none HTTP-responsive: falls back to lowest non-system
-	// Use high ports unlikely to be in use
-	port = s.pickPort("/nonexistent", []int{59001, 58001, 59501})
+	// Multiple ports, no web server commands: falls back to lowest non-system
+	port = s.pickPort("/nonexistent", []portEntry{
+		{port: 59001, cmd: "unknown"},
+		{port: 58001, cmd: "unknown"},
+		{port: 59501, cmd: "unknown"},
+	})
 	if port != 58001 {
 		t.Fatalf("expected 58001 (lowest non-system), got %d", port)
 	}
 
 	// With only system ports, should fallback to first
-	port = s.pickPort("/nonexistent", []int{80, 443})
+	port = s.pickPort("/nonexistent", []portEntry{
+		{port: 80, cmd: "nginx"},
+		{port: 443, cmd: "nginx"},
+	})
 	if port != 80 {
-		t.Fatalf("expected 80 (fallback to first), got %d", port)
+		t.Fatalf("expected 80 (lowest web server port), got %d", port)
 	}
 
-	// HTTP-responsive port should win over lower non-responsive port
-	// Start a real HTTP server to test probing
-	srv := &http.Server{Addr: "127.0.0.1:19877", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	})}
-	ln, err := net.Listen("tcp", "127.0.0.1:19877")
-	if err != nil {
-		t.Skipf("cannot bind test port: %v", err)
+	// Web server process port should win over lower non-web port
+	port = s.pickPort("/nonexistent", []portEntry{
+		{port: 3306, cmd: "mysqld"},
+		{port: 8080, cmd: "node"},
+		{port: 5432, cmd: "postgres"},
+	})
+	if port != 8080 {
+		t.Fatalf("expected 8080 (web server process), got %d", port)
 	}
-	go srv.Serve(ln)
-	defer srv.Close()
 
-	port = s.pickPort("/nonexistent", []int{19877, 3000, 8080})
-	if port != 19877 {
-		t.Fatalf("expected 19877 (HTTP-responsive), got %d", port)
+	// Among multiple web server ports, pick lowest non-system
+	port = s.pickPort("/nonexistent", []portEntry{
+		{port: 9000, cmd: "php"},
+		{port: 3000, cmd: "node"},
+		{port: 5432, cmd: "postgres"},
+	})
+	if port != 3000 {
+		t.Fatalf("expected 3000 (lowest web server port), got %d", port)
 	}
 }
 
