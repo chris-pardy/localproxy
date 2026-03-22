@@ -139,6 +139,61 @@ func TestParseDotLocalhostSpacing(t *testing.T) {
 	}
 }
 
+func TestParseDotLocalhostPorts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".localhost")
+
+	content := `name = myapp
+port = 3000
+
+[ports]
+api = 3001
+docs = 4000
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	dl, err := ParseDotLocalhost(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dl.Name != "myapp" {
+		t.Errorf("expected name myapp, got %s", dl.Name)
+	}
+	if dl.Port != 3000 {
+		t.Errorf("expected port 3000, got %d", dl.Port)
+	}
+	if len(dl.Ports) != 2 {
+		t.Fatalf("expected 2 port mappings, got %d", len(dl.Ports))
+	}
+	if dl.Ports[0].Subdomain != "api" || dl.Ports[0].Port != 3001 {
+		t.Errorf("expected api:3001, got %s:%d", dl.Ports[0].Subdomain, dl.Ports[0].Port)
+	}
+	if dl.Ports[1].Subdomain != "docs" || dl.Ports[1].Port != 4000 {
+		t.Errorf("expected docs:4000, got %s:%d", dl.Ports[1].Subdomain, dl.Ports[1].Port)
+	}
+}
+
+func TestParseDotLocalhostPortsOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".localhost")
+
+	content := `[ports]
+api = 3001
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	dl, err := ParseDotLocalhost(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dl.Name != "" || dl.Port != 0 {
+		t.Errorf("expected empty top-level, got name=%q port=%d", dl.Name, dl.Port)
+	}
+	if len(dl.Ports) != 1 || dl.Ports[0].Subdomain != "api" || dl.Ports[0].Port != 3001 {
+		t.Errorf("unexpected ports: %+v", dl.Ports)
+	}
+}
+
 func TestParseDotLocalhostMissing(t *testing.T) {
 	_, err := ParseDotLocalhost("/nonexistent/.localhost")
 	if err == nil {

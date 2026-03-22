@@ -54,6 +54,7 @@ func (s *Scanner) scan(ctx context.Context) {
 
 	if len(listeners) == 0 {
 		s.registry.PurgeStale(SourceScanner, cycleStart)
+		s.registry.PurgeStale(SourceDotfile, cycleStart)
 		return
 	}
 
@@ -100,16 +101,60 @@ func (s *Scanner) scan(ctx context.Context) {
 		}
 	}
 
-	// Step 4: Pick best port per project and register
+	// Step 4: Register best port + all port-qualified variants per project
 	for name, p := range projects {
-		port := s.pickPort(p.dir, p.ports)
-		if port == 0 {
+		// Deduplicate ports
+		seen := make(map[int]bool)
+		var unique []portEntry
+		for _, pe := range p.ports {
+			if !seen[pe.port] {
+				seen[pe.port] = true
+				unique = append(unique, pe)
+			}
+		}
+
+		// Register the best port as the bare project name
+		bestPort := s.pickPort(p.dir, unique)
+		if bestPort == 0 {
 			continue
 		}
-		s.registry.Register(name, port, SourceScanner, p.pid, p.dir)
+		s.registry.Register(name, bestPort, SourceScanner, p.pid, p.dir)
+
+		// Register all ports with port-qualified names
+		for _, pe := range unique {
+			qualifiedName := PortQualifiedName(name, pe.port)
+			reg := Registration{
+				Name:      qualifiedName,
+				Port:      pe.port,
+				Source:    SourceScanner,
+				PID:       p.pid,
+				Dir:       p.dir,
+				Project:   name,
+				UpdatedAt: time.Now(),
+			}
+			s.registry.RegisterFull(reg)
+		}
+
+		// Register dotfile [ports] named subdomains
+		dl, err := ParseDotLocalhost(filepath.Join(p.dir, ".localhost"))
+		if err == nil {
+			for _, pm := range dl.Ports {
+				subName := pm.Subdomain + "." + name
+				reg := Registration{
+					Name:      subName,
+					Port:      pm.Port,
+					Source:    SourceDotfile,
+					Dir:       p.dir,
+					Project:   name,
+					UpdatedAt: time.Now(),
+				}
+				s.registry.RegisterFull(reg)
+			}
+		}
 	}
 
 	s.registry.PurgeStale(SourceScanner, cycleStart)
+	s.registry.PurgeStale(SourceDotfile, cycleStart)
 }
 
 // listener info: pid → list of ports
